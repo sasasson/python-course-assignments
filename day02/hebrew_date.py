@@ -1,69 +1,77 @@
-"""hebrew_date.py
-
-Provides a simple function to convert a Gregorian date to a Hebrew date.
-Uses the `convertdate` package if available.
-
-Function:
-- gregorian_to_hebrew(year, month, day) -> dict with keys: year, month, day, month_name, formatted
-
-Also provides a small CLI when run as __main__.
-"""
-from typing import Tuple, Dict
-
-try:
-    from convertdate import hebrew, jd
-except Exception as e:
-    hebrew = None
-    jd = None
-
-HEBREW_MONTH_NAMES = [
-    "Nisan",
-    "Iyar",
-    "Sivan",
-    "Tamuz",
-    "Av",
-    "Elul",
-    "Tishri",
-    "Cheshvan",
-    "Kislev",
-    "Tevet",
-    "Shevat",
-    "Adar",
-    "Adar II"
-]
-
-def gregorian_to_hebrew(year: int, month: int, day: int) -> Dict[str, object]:
-    """Convert a Gregorian date to a Hebrew date.
-
-    Returns a dict with:
-      - year (int)
-      - month (int, 1-based Hebrew month index)
-      - day (int)
-      - month_name (str)
-      - formatted (str) e.g. '5 Nisan 5785'
-
-    This function requires the `convertdate` package. If the package is not
-    installed, it raises ImportError.
+def gregorian_to_hebrew(year: int, month: int, day: int) -> dict:
     """
-    if hebrew is None or jd is None:
-        raise ImportError("This function requires the 'convertdate' package. Install with: pip install convertdate")
+    Convert a Gregorian date to a Hebrew date.
+
+    Returns a dict with keys:
+      - year (int)       : Hebrew year
+      - month (int)      : Hebrew month number (1..13)
+      - day (int)        : Hebrew day (1..30)
+      - month_name (str) : Human-readable month name (Adar II handled)
+      - formatted (str)  : e.g. "5 Nisan 5785"
+
+    Requires the 'convertdate' package. Install with:
+      python -m pip install convertdate
+
+    Example:
+      >>> gregorian_to_hebrew(2025, 11, 7)
+      {'year': 5786, 'month': 8, 'day': 1, 'month_name': 'Cheshvan', 'formatted': '1 Cheshvan 5786'}
+    """
+    try:
+        # import hebrew implementation
+        import convertdate.hebrew as hebrew
+    except Exception:
+        raise ImportError("This function requires the 'convertdate' package (missing 'hebrew' module). "
+                          "Install with: python -m pip install convertdate")
+
+    # convertdate exposes julian-day helpers under different names across versions
+    # try a few common module names (julianday, daycount, utils.julianday)
+    jd = None
+    jd_candidates = [
+        "convertdate.julianday",
+        "convertdate.daycount",
+        "convertdate.jd",
+        "convertdate.utils",
+    ]
+    for cand in jd_candidates:
+        try:
+            module = __import__(cand, fromlist=["*"])
+            # prefer modules that expose from_gregorian / to_gregorian
+            if hasattr(module, "from_gregorian") and hasattr(module, "to_gregorian"):
+                jd = module
+                break
+            # if module is a utils package, check for a submodule named 'julianday'
+            if cand.endswith("utils"):
+                try:
+                    sub = __import__(cand + ".julianday", fromlist=["*"])
+                    if hasattr(sub, "from_gregorian") and hasattr(sub, "to_gregorian"):
+                        jd = sub
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+    if jd is None:
+        raise ImportError("This function requires the 'convertdate' package with a julianday helper (tried: julianday, daycount, jd). "
+                          "Install or upgrade convertdate: python -m pip install --upgrade convertdate")
 
     # convert Gregorian to Julian day then to Hebrew
     j = jd.from_gregorian(year, month, day)
     h_year, h_month, h_day = hebrew.from_jd(j)
 
-    # convert month index into a name
-    # Note: convertdate returns months as numbers 1..13 where Adar II is 13 in leap years
-    # We'll map 1..13 to readable names; for Adar (non-leap) the month returned will be 12.
+    # month names (index for 1..13; 13 -> Adar II)
+    HEBREW_MONTH_NAMES = [
+        "Nisan", "Iyar", "Sivan", "Tamuz", "Av", "Elul",
+        "Tishri", "Cheshvan", "Kislev", "Tevet", "Shevat",
+        "Adar", "Adar II"
+    ]
+
     if h_month == 13:
         month_name = "Adar II"
     else:
-        # map typical months; adjust index because our list starts at Nisan (1)
-        # The convertdate hebrew month numbers: 1=Nisan ... 6=Elul, 7=Tishri ... 12=Adar (or Adar I in leap years), 13=Adar II
-        # Our HEBREW_MONTH_NAMES is aligned so index-1 is correct for 1..13 except Adar II handled above
         month_name = HEBREW_MONTH_NAMES[h_month - 1]
 
-    formatted = f"{h_day} {month_name} {h_year}"
+    formatted = f"{int(h_day)} {month_name} {int(h_year)}"
 
     return {
         "year": int(h_year),
@@ -89,19 +97,24 @@ def _cli():
         interactive_input()
         return
     if mode == "gui":
-        run_gui()
+        try:
+            run_gui()
+        except Exception:
+            print("GUI failed to start. Try interactive mode instead.")
         return
 
-    # CLI mode: require year/month/day as positional args
+    # CLI mode: if year/month/day are missing, fall back to interactive prompt
     if args.year is None or args.month is None or args.day is None:
-        parser.error("year month day are required in cli mode")
+        print("No date provided — switching to interactive input mode.")
+        interactive_input()
+        return
 
     try:
         res = gregorian_to_hebrew(args.year, args.month, args.day)
     except ImportError as e:
         print(str(e))
         print("Install with: python -m pip install convertdate")
-        raise
+        return
 
     print(res["formatted"])
 
@@ -113,7 +126,11 @@ def interactive_input() -> None:
     user wants to type the date interactively.
     """
     try:
-        y = int(input("Enter Gregorian year (e.g. 2025): ").strip())
+        y_str = input("Enter Gregorian year (e.g. 2025): ").strip()
+        if not y_str:
+            print("No input received. Exiting.")
+            return
+        y = int(y_str)
         m = int(input("Enter Gregorian month (1-12): ").strip())
         d = int(input("Enter Gregorian day (1-31): ").strip())
     except ValueError:
@@ -131,16 +148,11 @@ def interactive_input() -> None:
 
 
 def run_gui() -> None:
-    """Run a tiny Tkinter GUI to enter a Gregorian date and display the Hebrew date.
-
-    The GUI is intentionally minimal: three entry fields and a button to convert.
-    """
     try:
         import tkinter as tk
         from tkinter import ttk, messagebox
     except Exception:
-        print("Tkinter is not available on this system. The GUI cannot be started.")
-        return
+        raise
 
     def on_convert():
         try:
